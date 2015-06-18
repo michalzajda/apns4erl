@@ -1,6 +1,9 @@
 language: erlang
 otp_release:
-   - 17.3
-   - R16B03-1
-   - R15B03
-script: "make tests"
+- 17.3
+- R16B03-1
+- R15B03
+script: make tests
+before_install:
+- openssl aes-256-cbc -K $encrypted_3448a659df33_key -iv $encrypted_3448a659df33_iv
+  -in priv/cert.pem.enc -out priv/cert.pem -d
