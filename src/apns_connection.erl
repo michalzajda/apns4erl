@@ -103,16 +103,8 @@ open_out(Connection) ->
   end.
 
 %% @hidden
-open_feedback(Connection) ->
-  case ssl:connect(
-    Connection#apns_connection.feedback_host,
-    Connection#apns_connection.feedback_port,
-    ssl_opts(Connection),
-    Connection#apns_connection.timeout
-  ) of
-    {ok, InSocket} -> {ok, InSocket};
-    {error, Reason} -> {error, Reason}
-  end.
+open_feedback(_Connection) ->
+    {ok, feedback_disabled}.
 
 %% @hidden
 -spec handle_call(X, reference(), state()) -> {stop, {unknown_request, X}, {unknown_request, X}, state()}.
