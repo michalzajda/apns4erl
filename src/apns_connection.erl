@@ -90,28 +90,8 @@ open_out(Connection) ->
   end.
 
 %% @hidden
-open_feedback(Connection) ->
-  KeyFile = case Connection#apns_connection.key_file of
-    undefined -> [];
-    Filename -> [{keyfile, filename:absname(Filename)}]
-  end,
-  SslOpts = [
-    {certfile, filename:absname(Connection#apns_connection.cert_file)},
-    {mode, binary} | KeyFile
-  ],
-  RealSslOpts = case Connection#apns_connection.cert_password of
-    undefined -> SslOpts;
-    Password -> [{password, Password} | SslOpts]
-  end,
-  case ssl:connect(
-    Connection#apns_connection.feedback_host,
-    Connection#apns_connection.feedback_port,
-    RealSslOpts,
-    Connection#apns_connection.timeout
-  ) of
-    {ok, InSocket} -> {ok, InSocket};
-    {error, Reason} -> {error, Reason}
-  end.
+open_feedback(_Connection) ->
+    {ok, feedback_disabled}.
 
 %% @hidden
 -spec handle_call(X, reference(), state()) -> {stop, {unknown_request, X}, {unknown_request, X}, state()}.
