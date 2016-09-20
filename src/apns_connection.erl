@@ -20,7 +20,8 @@
                 in_socket         :: tuple(),
                 connection        :: #apns_connection{},
                 in_buffer = <<>>  :: binary(),
-                out_buffer = <<>> :: binary()}).
+                out_buffer = <<>> :: binary(),
+                retry_max = 3     :: integer()}).
 -type state() :: #state{}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -133,15 +134,10 @@ handle_cast(Msg, State=#state{out_socket=undefined,connection=Connection}) ->
   end;
 
 handle_cast(Msg, State) when is_record(Msg, apns_msg) ->
-  Socket = State#state.out_socket,
   Payload = build_payload(Msg),
-  BinToken = hexstr_to_bin(Msg#apns_msg.device_token),
-  case send_payload(Socket, Msg#apns_msg.id, Msg#apns_msg.expiry, BinToken, Payload) of
-    ok ->
-      {noreply, State};
-    {error, Reason} ->
-      {stop, {error, Reason}, State}
-  end;
+  ReadyMsg = Msg#apns_msg{payload = Payload},
+  send_payload(ReadyMsg, State, 0),
+  {noreply, State};
 
 handle_cast(stop, State) ->
   {stop, normal, State}.
@@ -280,8 +276,40 @@ do_build_payload([{Key,Value}|Params], Payload) ->
 do_build_payload([], Payload) ->
   {Payload}.
 
--spec send_payload(tuple(), binary(), non_neg_integer(), binary(), iolist()) -> ok | {error, term()}.
-send_payload(Socket, MsgId, Expiry, BinToken, Payload) ->
+send_payload(Msg, #state{retry_max = Counter}, Counter) ->
+  error_logger:error_msg("Discarding message id: ~p on ~p try", [Msg#apns_msg.id, Counter]);
+send_payload(Msg, #state{out_socket = undefined} = State, Counter) ->
+  reconnect_and_send(Msg, State, Counter);
+send_payload(Msg, #state{connection = Connection, out_socket = Socket} = State, Counter) ->
+  BinToken = hexstr_to_bin(Msg#apns_msg.device_token),
+  case do_send_payload(Socket, Msg#apns_msg.id, Msg#apns_msg.expiry, BinToken, Msg#apns_msg.payload) of
+    ok ->
+      ok;
+    {error, Reason} ->
+      error_logger:info_msg("Message send failed with reason: ~p, reconnecting...", [Reason]),
+      reconnect_and_send(Msg, State#state{connection = Connection}, Counter)
+  end.
+
+reconnect_and_send(Msg, #state{connection = Connection} = State, Counter) ->
+  try
+    %% INFO: we need to embed reconnect here to keep the order of messages
+    error_logger:info_msg("Reconnecting to APNS for message id: ~p", [Msg#apns_msg.id]),
+    case open_out(Connection) of
+      {ok, NewSocket} ->
+        send_payload(Msg, State#state{out_socket = NewSocket}, Counter + 1);
+      {error, Reason} ->
+        error_logger:error_msg("Reconnect failure ~p for ~p", [Reason, Connection]),
+        send_payload(Msg, State#state{out_socket = undefined}, Counter + 1)
+    end
+  catch
+    _:{error, Reason2} ->
+      error_logger:error_msg("Reconnect crash ~p for ~p", [Reason2, Connection]),
+      send_payload(Msg, State#state{out_socket = undefined}, Counter + 1)
+  end.
+
+
+-spec do_send_payload(tuple(), binary(), non_neg_integer(), binary(), iolist()) -> ok | {error, term()}.
+do_send_payload(Socket, MsgId, Expiry, BinToken, Payload) ->
     BinPayload = list_to_binary(Payload),
     PayloadLength = erlang:size(BinPayload),
     Packet = [<<1:8, MsgId/binary, Expiry:4/big-unsigned-integer-unit:8,
