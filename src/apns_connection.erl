@@ -21,6 +21,7 @@
                 connection        :: #apns_connection{},
                 in_buffer = <<>>  :: binary(),
                 out_buffer = <<>> :: binary(),
+                prev_msg          :: term(),
                 retry_max = 3     :: integer()}).
 -type state() :: #state{}.
 
@@ -136,8 +137,8 @@ handle_cast(Msg, State=#state{out_socket=undefined,connection=Connection}) ->
 handle_cast(Msg, State) when is_record(Msg, apns_msg) ->
   Payload = build_payload(Msg),
   ReadyMsg = Msg#apns_msg{payload = Payload},
-  send_payload(ReadyMsg, State, 0),
-  {noreply, State};
+  Msg = send_payload(ReadyMsg, State, 0),
+  {noreply, State#state{prev_msg={os:timestamp(), Msg}}};
 
 handle_cast(stop, State) ->
   {stop, normal, State}.
@@ -208,9 +209,33 @@ handle_info(reconnect, State = #state{connection = Connection}) ->
     {error, Reason} -> {stop, {in_closed, Reason}, State}
   end;
 
-handle_info({ssl_closed, SslSocket}, State = #state{out_socket = SslSocket}) ->
-  error_logger:info_msg("APNS disconnected~n"),
-  {noreply, State#state{out_socket=undefined}};
+handle_info({ssl_closed, SslSocket}, State = #state{prev_msg = PrevMsg, out_socket = SslSocket, connection = Connection}) ->
+    error_logger:info_msg("APNS disconnected~n"),
+    try
+        error_logger:info_msg("Reconnecting to APNS...~n"),
+        case {open_out(Connection), PrevMsg} of
+            {{ok, Socket}, undefined} ->
+                error_logger:info_msg("No message in the prev buffer"),
+                {noreply, State#state{out_socket = Socket}};
+            {{ok, Socket}, {SendTime, Msg}} ->
+                {_, TimeDiff} = calendar:time_difference(calendar:now_to_datetime(SendTime),
+                                                         calendar:now_to_datetime(os:timestamp())),
+                case TimeDiff of
+                    {0, M, _} when M < 5 ->
+                        error_logger:info_msg("Retry after ssl_closed: ~p, ~p", [Msg#apns_msg.id, Msg]),
+                        %% TODO: make the M configurable via connection options
+                        send_payload(Msg, State#state{out_socket = Socket}, 0);
+                    _ ->
+                        error_logger:info_msg("Expired message after ssl_closed: ~p, ~p", [Msg#apns_msg.id, Msg]),
+                        ok
+                end,
+                %% kill the prev_msg. If it failed 2 times in row (3 tries each) it may be token failure
+                {noreply, State#state{prev_msg = undefined, out_socket = Socket}};
+            {error, Reason} -> {stop, Reason}
+        end
+    catch
+        _:{error, Reason2} -> {stop, Reason2}
+    end;
 
 handle_info(Request, State) ->
   {stop, {unknown_request, Request}, State}.
@@ -284,7 +309,7 @@ send_payload(Msg, #state{connection = Connection, out_socket = Socket} = State, 
   BinToken = hexstr_to_bin(Msg#apns_msg.device_token),
   case do_send_payload(Socket, Msg#apns_msg.id, Msg#apns_msg.expiry, BinToken, Msg#apns_msg.payload) of
     ok ->
-      ok;
+      Msg;
     {error, Reason} ->
       error_logger:info_msg("Message send failed with reason: ~p, reconnecting...", [Reason]),
       reconnect_and_send(Msg, State#state{connection = Connection}, Counter)
