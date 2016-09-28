@@ -137,8 +137,8 @@ handle_cast(Msg, State=#state{out_socket=undefined,connection=Connection}) ->
 handle_cast(Msg, State) when is_record(Msg, apns_msg) ->
   Payload = build_payload(Msg),
   ReadyMsg = Msg#apns_msg{payload = Payload},
-  Msg = send_payload(ReadyMsg, State, 0),
-  {noreply, State#state{prev_msg={os:timestamp(), Msg}}};
+  SentMessage = send_payload(ReadyMsg, State, 0),
+  {noreply, State#state{prev_msg={os:timestamp(), SentMessage}}};
 
 handle_cast(stop, State) ->
   {stop, normal, State}.
